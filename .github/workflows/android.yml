@@ -1,4 +1,4 @@
-name: Build and Install-Test SmartHome APK
+name: Build SmartHome Safe APK
 
 on:
   push:
@@ -28,34 +28,100 @@ jobs:
           cat SmartHomeSource.b64.part00 SmartHomeSource.b64.part01 SmartHomeSource.b64.part02 | base64 --decode > SmartHomeSource.zip
           mkdir -p smarthome
           unzip -q SmartHomeSource.zip -d smarthome
+      - name: Remove all sensitive permissions and scanners
+        run: |
+          cat > smarthome/app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+              <queries>
+                  <intent>
+                      <action android:name="android.intent.action.MAIN" />
+                      <category android:name="android.intent.category.LAUNCHER" />
+                  </intent>
+                  <intent>
+                      <action android:name="android.intent.action.MAIN" />
+                      <category android:name="android.intent.category.HOME" />
+                  </intent>
+              </queries>
+              <application android:allowBackup="true" android:icon="@drawable/ic_launcher" android:label="SmartHome" android:theme="@style/AppTheme">
+                  <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTask">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.HOME" />
+                          <category android:name="android.intent.category.DEFAULT" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          EOF
+          rm -f smarthome/app/src/main/java/com/smarthome/launcher/LayoutCaptureService.java
+          rm -f smarthome/app/src/main/res/xml/accessibility_service_config.xml
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          p=Path('smarthome/app/src/main/java/com/smarthome/launcher/MainActivity.java')
+          s=p.read_text()
+          s=s.replace('import android.content.ComponentName;\n','')
+          s=re.sub(r'\n    @Override\n    protected void onNewIntent\(Intent intent\) \{.*?\n    \}\n\n    @Override\n    protected void onPause', '\n    @Override\n    protected void onNewIntent(Intent intent) {\n        super.onNewIntent(intent);\n        setIntent(intent);\n    }\n\n    @Override\n    protected void onPause', s, flags=re.S)
+          m=re.search(r'        int captured = prefs\.getInt\("captured_count", 0\);.*?        root\.addView\(permissions\);', s, flags=re.S)
+          safe='''        String status = "מצאתי " + apps.size() + " אפליקציות  •  מצב פרטיות: ללא הרשאות רגישות";\n        TextView statusView = text(status, 13, false, muted);\n        statusView.setPadding(dp(14), dp(12), dp(14), dp(12));\n        statusView.setBackground(cardBg());\n        LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);\n        sp.setMargins(0, dp(18), 0, dp(12));\n        root.addView(statusView, sp);\n\n        TextView explain = text("SmartHome מתחיל מהקטגוריות והאפליקציות החשובות, ואז לומד מקומית לפי מה שאתה פותח דרכו. הוא לא קורא את המסך ולא מבקש הרשאות רגישות.", 15, false, text);\n        root.addView(explain);'''
+          if not m: raise SystemExit('setup block not found')
+          s=s[:m.start()]+safe+s[m.end():]
+          m=re.search(r'    private void openSettingsMenu\(\) \{.*?\n    \}\n\n    private void openUsageAccess\(\) \{.*?\n    \}\n\n    private void startCaptureFlow\(\) \{.*?\n    \}\n\n    private boolean isAccessibilityEnabled\(\) \{.*?\n    \}\n\n    private String currentHomePackage', s, flags=re.S)
+          menu='''    private void openSettingsMenu() {\n        String[] items = new String[] {\n                "צור שוב 3 הצעות סידור",\n                "בחר Launcher ברירת מחדל",\n                "אפס Pin / Hide"\n        };\n        new AlertDialog.Builder(this)\n                .setTitle("SmartHome")\n                .setItems(items, (d, which) -> {\n                    if (which == 0) { forceSetup = true; renderSetup(); }\n                    else if (which == 1) {\n                        try { startActivity(new Intent(Settings.ACTION_HOME_SETTINGS)); refreshAfterExternal = true; }\n                        catch (Throwable ignored) {}\n                    } else {\n                        prefs.edit().remove("pinned").remove("hidden").apply();\n                        loadData();\n                    }\n                }).show();\n    }\n\n    private String currentHomePackage'''
+          if not m: raise SystemExit('settings block not found')
+          s=s[:m.start()]+menu+s[m.end():]
+          s=s.replace('הכול מחושב מקומית בטלפון. אין העלאה של רשימת האפליקציות או נתוני השימוש לענן.', 'הכול מחושב מקומית בטלפון. אין Accessibility, SMS, אנשי קשר, התראות או הרשאות מערכת רגישות.')
+          p.write_text(s)
+
+          p=Path('smarthome/app/src/main/java/com/smarthome/launcher/SmartEngine.java')
+          s=p.read_text()
+          s=s.replace('        Map<String, UsageAnalyzer.Info> usage = UsageAnalyzer.read(activity);\n','')
+          s=re.sub(r'            UsageAnalyzer\.Info u = usage\.get\(a\.packageName\);\n            if \(u != null\) \{.*?\n            \}\n', '', s, flags=re.S)
+          s=s.replace('            a.launches += ownLaunches * 2;\n            a.lastUsed = Math.max(a.lastUsed, ownLast);', '            a.launches = ownLaunches;\n            a.lastUsed = ownLast;')
+          old='''            double time = Math.log1p(a.foregroundMs / 60000.0) / maxLogTime;\n            double launches = Math.log1p(a.launches) / maxLogLaunch;\n            double days = a.lastUsed <= 0 ? 30.0 : Math.max(0, (now - a.lastUsed) / 86400000.0);\n            double recency = Math.exp(-days / 7.0);\n            double importBonus = a.importedOrder == Integer.MAX_VALUE ? 0.0 : Math.max(0.0, 1.0 - (a.importedOrder / 30.0));\n            a.score = 0.46 * time + 0.28 * launches + 0.18 * recency + 0.08 * importBonus;'''
+          new='''            double launches = Math.log1p(a.launches) / maxLogLaunch;\n            double days = a.lastUsed <= 0 ? 30.0 : Math.max(0, (now - a.lastUsed) / 86400000.0);\n            double recency = a.lastUsed <= 0 ? 0.0 : Math.exp(-days / 7.0);\n            double bootstrap = bootstrapScore(a);\n            a.score = 0.54 * launches + 0.28 * recency + 0.18 * bootstrap;'''
+          if old not in s: raise SystemExit('score block not found')
+          s=s.replace(old,new)
+          marker='    private boolean has(String s, String... needles) {'
+          bootstrap='''    private double bootstrapScore(AppEntry a) {\n        String s = (a.label + " " + a.packageName).toLowerCase(Locale.ROOT);\n        if (has(s, "whatsapp", "phone", "dialer", "messages", "chrome", "firefox", "browser", "waze", "maps")) return 1.0;\n        if (has(s, "camera", "gallery", "photos", "gmail", "calendar", "clock", "contacts")) return 0.82;\n        if ("תקשורת".equals(a.category) || "ניווט ונסיעות".equals(a.category) || "עבודה".equals(a.category)) return 0.65;\n        if ("כלים".equals(a.category) || "צילום ועריכה".equals(a.category)) return 0.48;\n        return 0.25;\n    }\n\n'''
+          s=s.replace(marker,bootstrap+marker)
+          p.write_text(s)
+          PY
+          if grep -RniE '<uses-permission|BIND_ACCESSIBILITY_SERVICE|AccessibilityService' smarthome/app/src/main/AndroidManifest.xml; then exit 1; fi
       - name: Patch install-safe identity
         run: |
           python - <<'PY'
           from pathlib import Path
-          p = Path('smarthome/app/build.gradle')
-          s = p.read_text()
-          s = s.replace("applicationId 'com.smarthome.launcher'", "applicationId 'com.aviv.smarthome'")
-          s = s.replace('minSdk 26', 'minSdk 23')
-          s = s.replace('targetSdk 35', 'targetSdk 34')
-          s = s.replace('versionCode 1', 'versionCode 3')
-          s = s.replace("versionName '1.0.0'", "versionName '1.0.2'")
+          p=Path('smarthome/app/build.gradle')
+          s=p.read_text()
+          s=s.replace("applicationId 'com.smarthome.launcher'", "applicationId 'com.aviv.smarthome.safe'")
+          s=s.replace('minSdk 26', 'minSdk 23')
+          s=s.replace('targetSdk 35', 'targetSdk 34')
+          s=s.replace('versionCode 1', 'versionCode 4')
+          s=s.replace("versionName '1.0.0'", "versionName '1.0.3'")
           p.write_text(s)
           PY
       - name: Build release
         run: cd smarthome && gradle :app:assembleRelease --stacktrace
       - name: Sign release APK
         run: |
-          keytool -genkeypair -v -keystore smarthome-release.jks -storepass SmartHome2026 -keypass SmartHome2026 -alias smarthome -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=SmartHome,O=Aviv,C=IL"
-          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -f -v 4 smarthome/app/build/outputs/apk/release/app-release-unsigned.apk SmartHome-1.0.2-aligned.apk
-          "$ANDROID_HOME/build-tools/35.0.0/apksigner" sign --ks smarthome-release.jks --ks-key-alias smarthome --ks-pass pass:SmartHome2026 --key-pass pass:SmartHome2026 --out SmartHome-1.0.2.apk SmartHome-1.0.2-aligned.apk
-      - name: Verify APK
+          keytool -genkeypair -v -keystore smarthome-safe.jks -storepass SmartHomeSafe2026 -keypass SmartHomeSafe2026 -alias smarthome -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=SmartHome Safe,O=Aviv,C=IL"
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -f -v 4 smarthome/app/build/outputs/apk/release/app-release-unsigned.apk SmartHome-1.0.3-Safe-aligned.apk
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" sign --ks smarthome-safe.jks --ks-key-alias smarthome --ks-pass pass:SmartHomeSafe2026 --key-pass pass:SmartHomeSafe2026 --out SmartHome-1.0.3-Safe.apk SmartHome-1.0.3-Safe-aligned.apk
+      - name: Verify APK has no permissions
         run: |
-          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs SmartHome-1.0.2.apk
-          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging SmartHome-1.0.2.apk | head -20
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs SmartHome-1.0.3-Safe.apk
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump permissions SmartHome-1.0.3-Safe.apk | tee permissions.txt
+          if grep -q "uses-permission" permissions.txt; then echo 'Unexpected permission found'; exit 1; fi
       - uses: actions/upload-artifact@v4
         with:
-          name: SmartHome-1.0.2-Release
-          path: SmartHome-1.0.2.apk
+          name: SmartHome-1.0.3-Safe
+          path: SmartHome-1.0.3-Safe.apk
           if-no-files-found: error
 
   install_test:
@@ -65,7 +131,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: SmartHome-1.0.2-Release
+          name: SmartHome-1.0.3-Safe
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -80,6 +146,5 @@ jobs:
           profile: pixel_2
           disable-animations: true
           script: |
-            adb install -r SmartHome-1.0.2.apk
-            adb shell pm path com.aviv.smarthome
-            adb shell dumpsys package com.aviv.smarthome | grep -E "versionName|versionCode" | head -4
+            adb install -r SmartHome-1.0.3-Safe.apk
+            adb shell pm path com.aviv.smarthome.safe
