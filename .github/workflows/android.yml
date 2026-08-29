@@ -11,30 +11,24 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-
       - uses: android-actions/setup-android@v3
-
       - name: Install Android SDK
         run: |
           yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "emulator" "system-images;android-33;google_apis;x86_64"
-
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.11.1'
-
       - name: Reconstruct source
         run: |
           cat SmartHomeSource.b64.part00 SmartHomeSource.b64.part01 SmartHomeSource.b64.part02 | base64 --decode > SmartHomeSource.zip
           mkdir -p smarthome
           unzip -q SmartHomeSource.zip -d smarthome
-
-      - name: Patch for install-safe release
+      - name: Patch install-safe identity
         run: |
           python - <<'PY'
           from pathlib import Path
@@ -43,42 +37,49 @@ jobs:
           s = s.replace("applicationId 'com.smarthome.launcher'", "applicationId 'com.aviv.smarthome'")
           s = s.replace('minSdk 26', 'minSdk 23')
           s = s.replace('targetSdk 35', 'targetSdk 34')
-          s = s.replace('versionCode 1', 'versionCode 2')
-          s = s.replace("versionName '1.0.0'", "versionName '1.0.1'")
+          s = s.replace('versionCode 1', 'versionCode 3')
+          s = s.replace("versionName '1.0.0'", "versionName '1.0.2'")
           p.write_text(s)
-          print(p.read_text())
           PY
-
-      - name: Build unsigned release
+      - name: Build release
         run: cd smarthome && gradle :app:assembleRelease --stacktrace
-
       - name: Sign release APK
         run: |
           keytool -genkeypair -v -keystore smarthome-release.jks -storepass SmartHome2026 -keypass SmartHome2026 -alias smarthome -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=SmartHome,O=Aviv,C=IL"
-          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -f -v 4 smarthome/app/build/outputs/apk/release/app-release-unsigned.apk SmartHome-1.0.1-aligned.apk
-          "$ANDROID_HOME/build-tools/35.0.0/apksigner" sign --ks smarthome-release.jks --ks-key-alias smarthome --ks-pass pass:SmartHome2026 --key-pass pass:SmartHome2026 --out SmartHome-1.0.1.apk SmartHome-1.0.1-aligned.apk
-
-      - name: Verify APK signature and manifest
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -f -v 4 smarthome/app/build/outputs/apk/release/app-release-unsigned.apk SmartHome-1.0.2-aligned.apk
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" sign --ks smarthome-release.jks --ks-key-alias smarthome --ks-pass pass:SmartHome2026 --key-pass pass:SmartHome2026 --out SmartHome-1.0.2.apk SmartHome-1.0.2-aligned.apk
+      - name: Verify APK
         run: |
-          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs SmartHome-1.0.1.apk
-          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging SmartHome-1.0.1.apk | head -20
-
-      - name: Boot Android 13 emulator
-        run: |
-          echo no | avdmanager create avd -n smarthome_test -k "system-images;android-33;google_apis;x86_64" --force
-          "$ANDROID_HOME/emulator/emulator" -avd smarthome_test -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -no-snapshot -accel off > /tmp/emulator.log 2>&1 &
-          adb wait-for-device
-          timeout 420 bash -c 'until [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" = "1" ]; do sleep 5; done'
-          adb shell input keyevent 82 || true
-
-      - name: Install test on Android 13
-        run: |
-          adb install -r SmartHome-1.0.1.apk
-          adb shell pm path com.aviv.smarthome
-          adb shell dumpsys package com.aviv.smarthome | grep -E "versionName|versionCode" | head -4
-
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs SmartHome-1.0.2.apk
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging SmartHome-1.0.2.apk | head -20
       - uses: actions/upload-artifact@v4
         with:
-          name: SmartHome-1.0.1-Install-Tested
-          path: SmartHome-1.0.1.apk
+          name: SmartHome-1.0.2-Release
+          path: SmartHome-1.0.2.apk
           if-no-files-found: error
+
+  install_test:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: SmartHome-1.0.2-Release
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm || true
+      - name: Install on Android 13 emulator
+        uses: ReactiveCircus/android-emulator-runner@v2
+        with:
+          api-level: 33
+          target: google_apis
+          arch: x86_64
+          profile: pixel_2
+          disable-animations: true
+          script: |
+            adb install -r SmartHome-1.0.2.apk
+            adb shell pm path com.aviv.smarthome
+            adb shell dumpsys package com.aviv.smarthome | grep -E "versionName|versionCode" | head -4
