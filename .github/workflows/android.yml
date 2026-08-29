@@ -1,4 +1,4 @@
-name: Build SmartHome APK
+name: Build and Install-Test SmartHome APK
 
 on:
   push:
@@ -19,10 +19,10 @@ jobs:
 
       - uses: android-actions/setup-android@v3
 
-      - name: Install Android SDK 35
+      - name: Install Android SDK
         run: |
           yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "platforms;android-35" "build-tools;35.0.0"
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "emulator" "system-images;android-33;google_apis;x86_64"
 
       - uses: gradle/actions/setup-gradle@v4
         with:
@@ -34,14 +34,51 @@ jobs:
           mkdir -p smarthome
           unzip -q SmartHomeSource.zip -d smarthome
 
-      - name: Build APK
-        run: cd smarthome && gradle :app:assembleDebug --stacktrace
+      - name: Patch for install-safe release
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('smarthome/app/build.gradle')
+          s = p.read_text()
+          s = s.replace("applicationId 'com.smarthome.launcher'", "applicationId 'com.aviv.smarthome'")
+          s = s.replace('minSdk 26', 'minSdk 23')
+          s = s.replace('targetSdk 35', 'targetSdk 34')
+          s = s.replace('versionCode 1', 'versionCode 2')
+          s = s.replace("versionName '1.0.0'", "versionName '1.0.1'")
+          p.write_text(s)
+          print(p.read_text())
+          PY
 
-      - name: Rename APK
-        run: cp smarthome/app/build/outputs/apk/debug/app-debug.apk SmartHome-1.0.0.apk
+      - name: Build unsigned release
+        run: cd smarthome && gradle :app:assembleRelease --stacktrace
+
+      - name: Sign release APK
+        run: |
+          keytool -genkeypair -v -keystore smarthome-release.jks -storepass SmartHome2026 -keypass SmartHome2026 -alias smarthome -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=SmartHome,O=Aviv,C=IL"
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -f -v 4 smarthome/app/build/outputs/apk/release/app-release-unsigned.apk SmartHome-1.0.1-aligned.apk
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" sign --ks smarthome-release.jks --ks-key-alias smarthome --ks-pass pass:SmartHome2026 --key-pass pass:SmartHome2026 --out SmartHome-1.0.1.apk SmartHome-1.0.1-aligned.apk
+
+      - name: Verify APK signature and manifest
+        run: |
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs SmartHome-1.0.1.apk
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging SmartHome-1.0.1.apk | head -20
+
+      - name: Boot Android 13 emulator
+        run: |
+          echo no | avdmanager create avd -n smarthome_test -k "system-images;android-33;google_apis;x86_64" --force
+          "$ANDROID_HOME/emulator/emulator" -avd smarthome_test -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -no-snapshot -accel off > /tmp/emulator.log 2>&1 &
+          adb wait-for-device
+          timeout 420 bash -c 'until [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d "\r")" = "1" ]; do sleep 5; done'
+          adb shell input keyevent 82 || true
+
+      - name: Install test on Android 13
+        run: |
+          adb install -r SmartHome-1.0.1.apk
+          adb shell pm path com.aviv.smarthome
+          adb shell dumpsys package com.aviv.smarthome | grep -E "versionName|versionCode" | head -4
 
       - uses: actions/upload-artifact@v4
         with:
-          name: SmartHome-APK
-          path: SmartHome-1.0.0.apk
+          name: SmartHome-1.0.1-Install-Tested
+          path: SmartHome-1.0.1.apk
           if-no-files-found: error
