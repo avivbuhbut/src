@@ -16,14 +16,21 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup Java 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Reconstruct exact Calm Schedule v1.3 source archive
+      - name: Verify source chunks and reconstruct v1.3
         shell: bash
         run: |
+          set -euxo pipefail
+          echo "d376284b2f4b1c2ae1eab75147d819606f8a4361b641113c0f63f325adf6f1bd  calm-schedule-build/p0.b64" | sha256sum -c -
+          echo "8b22186db0a6fdf680b45fc007458d260dd84c5650f99127386dc1497d164d4b  calm-schedule-build/p1.b64" | sha256sum -c -
+          echo "cf81ca4092ae38beba3ce52f21dfdaa5bdf3b23e42cecfa3477fa7fee6c6b39f  calm-schedule-build/p2.b64" | sha256sum -c -
+          echo "0c42d1a23598e70866ea1c62becd9272780c0ba71836f76fb7d84b22814645b0  calm-schedule-build/p3.b64" | sha256sum -c -
+          echo "9e4c80a33d245ce6bab9719051693d6a849d142cec7d4246f4a28ac6194ac417  calm-schedule-build/p4.b64" | sha256sum -c -
+          wc -c calm-schedule-build/p*.b64
           cat calm-schedule-build/p0.b64 calm-schedule-build/p1.b64 calm-schedule-build/p2.b64 calm-schedule-build/p3.b64 calm-schedule-build/p4.b64 > calm-schedule-build/project-full.b64
           base64 -d calm-schedule-build/project-full.b64 > CalmScheduleAndroid_v1.3.zip
           echo "312425187948cd05f28c3a4483d8a454e2317be532978ce5e62c6f8fe32fddfc  CalmScheduleAndroid_v1.3.zip" | sha256sum -c -
@@ -38,6 +45,7 @@ jobs:
       - name: Ensure Android 36 SDK
         shell: bash
         run: |
+          set -euxo pipefail
           SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
           if [ ! -x "$SDKMANAGER" ]; then
             SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
@@ -49,6 +57,7 @@ jobs:
         working-directory: CalmScheduleAndroid
         shell: bash
         run: |
+          set -euxo pipefail
           gradle --version
           gradle clean assembleDebug --stacktrace --no-daemon
 
@@ -56,6 +65,7 @@ jobs:
         working-directory: CalmScheduleAndroid
         shell: bash
         run: |
+          set -euxo pipefail
           test -f app/build/outputs/apk/debug/app-debug.apk
           sha256sum app/build/outputs/apk/debug/app-debug.apk | tee APK_SHA256.txt
           ls -lh app/build/outputs/apk/debug/app-debug.apk
