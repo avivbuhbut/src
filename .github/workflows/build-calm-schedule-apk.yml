@@ -1,0 +1,70 @@
+name: Build Calm Schedule APK
+
+on:
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout build branch
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Reconstruct exact Calm Schedule v1.3 source archive
+        shell: bash
+        run: |
+          cat calm-schedule-build/p0.b64 calm-schedule-build/p1.b64 calm-schedule-build/p2.b64 calm-schedule-build/p3.b64 calm-schedule-build/p4.b64 > calm-schedule-build/project-full.b64
+          base64 -d calm-schedule-build/project-full.b64 > CalmScheduleAndroid_v1.3.zip
+          echo "312425187948cd05f28c3a4483d8a454e2317be532978ce5e62c6f8fe32fddfc  CalmScheduleAndroid_v1.3.zip" | sha256sum -c -
+          unzip -q CalmScheduleAndroid_v1.3.zip
+          test -f CalmScheduleAndroid/app/build.gradle.kts
+
+      - name: Setup Gradle 9.6
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.6.0'
+
+      - name: Ensure Android 36 SDK
+        shell: bash
+        run: |
+          SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          fi
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Build debug APK
+        working-directory: CalmScheduleAndroid
+        shell: bash
+        run: |
+          gradle --version
+          gradle clean assembleDebug --stacktrace --no-daemon
+
+      - name: Verify APK
+        working-directory: CalmScheduleAndroid
+        shell: bash
+        run: |
+          test -f app/build/outputs/apk/debug/app-debug.apk
+          sha256sum app/build/outputs/apk/debug/app-debug.apk | tee APK_SHA256.txt
+          ls -lh app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: CalmSchedule-v1.3-debug-apk
+          path: |
+            CalmScheduleAndroid/app/build/outputs/apk/debug/app-debug.apk
+            CalmScheduleAndroid/APK_SHA256.txt
+          if-no-files-found: error
